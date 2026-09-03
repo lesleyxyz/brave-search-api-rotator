@@ -38,6 +38,9 @@ const UNEXPLAINED_429_THRESHOLD: u32 = 5;
 const UNEXPLAINED_429_BACKOFF: Duration = Duration::from_secs(5 * 60);
 /// If Brave says the month is exhausted but does not tell us when it resets.
 const EXHAUSTED_FALLBACK: Duration = Duration::from_secs(6 * 60 * 60);
+/// Fallback park duration when a self-imposed monthly cap (BRAVE_MONTHLY_LIMITS) is hit and
+/// Brave's own response gave us no reset time to go by.
+const OVERRIDE_CAP_FALLBACK: Duration = Duration::from_secs(30 * 24 * 60 * 60);
 const MAX_LEARNED_RPS: u64 = 1000;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -89,10 +92,13 @@ pub struct KeyState {
     pub disable_strikes: u32,
     pub disabled_since: Option<Instant>,
     pub stats: Stats,
+    /// Self-imposed monthly cap from BRAVE_MONTHLY_LIMITS, if set for this key. Enforced
+    /// in addition to (the stricter of) whatever Brave itself reports.
+    pub monthly_cap_override: Option<u64>,
 }
 
 impl KeyState {
-    fn new(idx: usize, token: String, default_rps: u32) -> Self {
+    fn new(idx: usize, token: String, default_rps: u32, monthly_cap_override: Option<u64>) -> Self {
         let tail: String = token
             .chars()
             .rev()
@@ -119,6 +125,7 @@ impl KeyState {
             disable_strikes: 0,
             disabled_since: None,
             stats: Stats::default(),
+            monthly_cap_override,
         }
     }
 
@@ -185,18 +192,46 @@ impl KeyState {
             .saturating_sub(self.sends.len() as u32)
     }
 
-    /// Brave reports a monthly limit of 0 for plans without a monthly cap.
+    /// Brave reports a monthly limit of 0 for plans without a monthly cap. A locally
+    /// configured override always takes precedence, since it exists precisely to correct
+    /// cases where Brave's headers under- or over-state the real usable quota.
     fn month_unlimited(&self) -> bool {
+        if self.monthly_cap_override.is_some() {
+            return false;
+        }
         self.month_limit == Some(0)
+    }
+
+    /// Requests already counted against the effective monthly cap this cycle. Uses our own
+    /// success counter when an override is active (Brave's own  header may be
+    /// tracking a different, higher limit than our override).
+    fn effective_month_used(&self) -> u64 {
+        if self.monthly_cap_override.is_some() {
+            self.stats.ok
+        } else {
+            self.month_limit
+                .zip(self.month_remaining)
+                .map(|(l, r)| l.saturating_sub(r))
+                .unwrap_or(0)
+        }
     }
 
     /// Remaining monthly quota as used for ranking: unknown or unlimited count as "plenty".
     fn month_remaining_for_ranking(&self) -> u64 {
+        if let Some(cap) = self.monthly_cap_override {
+            return cap.saturating_sub(self.effective_month_used());
+        }
         if self.month_unlimited() {
             u64::MAX
         } else {
             self.month_remaining.unwrap_or(u64::MAX)
         }
+    }
+
+    /// True once the self-imposed override cap (if any) has been used up this cycle.
+    fn override_cap_exhausted(&self) -> bool {
+        self.monthly_cap_override
+            .is_some_and(|cap| self.effective_month_used() >= cap)
     }
 
     fn learn_limits(&mut self, now: Instant, rl: &RateLimitInfo) {
@@ -345,6 +380,9 @@ pub enum AcquireError {
 pub struct PoolConfig {
     pub window_margin: Duration,
     pub default_rps: u32,
+    /// Positional self-imposed monthly cap per key, matching the order of  passed to
+    /// . Shorter than  or entries of  fall back to Brave-detected limits.
+    pub monthly_limits: Vec<Option<u64>>,
 }
 
 pub struct Pool {
@@ -359,7 +397,10 @@ impl Pool {
         let keys = keys
             .iter()
             .enumerate()
-            .map(|(i, k)| KeyState::new(i, k.clone(), cfg.default_rps))
+            .map(|(i, k)| {
+                let cap_override = cfg.monthly_limits.get(i).copied().flatten();
+                KeyState::new(i, k.clone(), cfg.default_rps, cap_override)
+            })
             .collect();
         Self {
             inner: Mutex::new(keys),
@@ -546,6 +587,11 @@ impl Pool {
                         // Proactive: the last allowed request of the month tells us so.
                         if rl.is_some_and(|r| r.month_exhausted()) {
                             k.exhaust(now, rl.and_then(|r| r.month_reset()));
+                        } else if k.override_cap_exhausted() {
+                            let reset_in = rl
+                                .and_then(|r| r.month_reset())
+                                .unwrap_or(OVERRIDE_CAP_FALLBACK);
+                            k.exhaust(now, Some(reset_in));
                         }
                         Verdict::Ok
                     }
@@ -784,6 +830,7 @@ mod tests {
             PoolConfig {
                 window_margin: Duration::from_millis(100),
                 default_rps: 1,
+                monthly_limits: Vec::new(),
             },
         )
     }

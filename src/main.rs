@@ -78,11 +78,19 @@ async fn run(cfg: Config) -> Result<(), Box<dyn std::error::Error>> {
         );
     }
 
+    if !cfg.monthly_limits.is_empty() && cfg.monthly_limits.len() != cfg.keys.len() {
+        warn!(
+            "BRAVE_MONTHLY_LIMITS has {} entr(y/ies) but BRAVE_API_KEYS has {}; extra keys use 'detect', extra limits are ignored",
+            cfg.monthly_limits.len(),
+            cfg.keys.len()
+        );
+    }
     let pool = Pool::new(
         &cfg.keys,
         PoolConfig {
             window_margin: cfg.window_margin,
             default_rps: cfg.default_rps_per_key,
+            monthly_limits: cfg.monthly_limits.clone(),
         },
     );
     let upstream = Upstream::new(

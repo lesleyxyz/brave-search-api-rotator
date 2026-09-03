@@ -32,6 +32,9 @@ pub struct Config {
     pub worker_threads: usize,
     /// Log every proxied request (method, path, search query, key, status, timing) at INFO.
     pub access_log: bool,
+    /// Optional self-imposed monthly cap per key (positional, matches `keys`); None = detect
+    /// from Brave's response headers as usual. See BRAVE_MONTHLY_LIMITS.
+    pub monthly_limits: Vec<Option<u64>>,
 }
 
 impl Config {
@@ -77,6 +80,29 @@ impl Config {
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty());
 
+        // Optional self-imposed monthly caps, positional per key in BRAVE_API_KEYS order.
+        // Each entry is either "detect" (use whatever Brave's X-RateLimit-Limit reports,
+        // the default) or a number: a hard ceiling enforced locally in addition to
+        // whatever Brave reports, useful when a key's real plan limit differs from what
+        // Brave's headers claim (e.g. a spend-based usage limit set in the dashboard).
+        // Example: BRAVE_MONTHLY_LIMITS=detect,1000,1000
+        let monthly_limits: Vec<Option<u64>> = std::env::var("BRAVE_MONTHLY_LIMITS")
+            .ok()
+            .filter(|s| !s.trim().is_empty())
+            .map(|raw| {
+                raw.split(',')
+                    .map(|s| {
+                        let s = s.trim();
+                        if s.is_empty() || s.eq_ignore_ascii_case("detect") {
+                            None
+                        } else {
+                            s.parse::<u64>().ok()
+                        }
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
         Ok(Config {
             keys,
             duplicate_keys,
@@ -93,6 +119,7 @@ impl Config {
             proxy_token,
             worker_threads: parse_env::<usize>("WORKER_THREADS", "2")?.max(1),
             access_log: parse_bool("ACCESS_LOG", true)?,
+            monthly_limits,
         })
     }
 }

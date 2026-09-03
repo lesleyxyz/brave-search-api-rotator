@@ -96,6 +96,7 @@ so build artifacts stay on the Linux filesystem, which is several times faster.
 | `UPSTREAM_TIMEOUT_MS` | `15000` | Total budget for one upstream request. |
 | `WINDOW_MARGIN_MS` | `100` | Extra time added to Brave's 1-second window to absorb network jitter. |
 | `DEFAULT_RPS_PER_KEY` | `1` | Requests/second assumed per key until Brave reports the real limit. |
+| `BRAVE_MONTHLY_LIMITS` | unset | Comma-separated, positional (same order as BRAVE_API_KEYS): a hard monthly cap per key enforced locally, on top of whatever Brave itself reports. Use 'detect' for a key that should keep using Brave's own rate-limit header (the default for every key when this is unset). Useful when Brave's dashboard usage limit (spend- or request-based) is lower than what the headers claim, e.g. BRAVE_MONTHLY_LIMITS=detect,1000,1000. |
 | `REPORT_INTERVAL_SECS` | `60` | Console status/health report interval. |
 | `MAX_BODY_BYTES` | `4194304` | Largest request/response body buffered. |
 | `WORKER_THREADS` | `2` | Tokio worker threads. |
