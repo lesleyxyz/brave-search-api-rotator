@@ -59,27 +59,19 @@ jobs:
     name: Build & push Docker image
     needs: test
     runs-on: ubuntu-latest
-    env:
-      # Docker Hardened Images (dhi.io, the build stage's base) require a Docker Hub login.
-      # Add DOCKERHUB_USERNAME / DOCKERHUB_TOKEN as repository secrets; the login step is
-      # skipped when they are absent, in which case the pull of dhi.io/rust will fail.
-      DHI_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
         with:
           persist-credentials: false
 
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3.6.0
+        with:
+          platforms: arm64
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3.11.1
-
-      - name: Log in to Docker Hardened Images registry
-        if: env.DHI_USERNAME != ''
-        uses: docker/login-action@v3.5.0
-        with:
-          registry: dhi.io
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - name: Log in to GitHub Container Registry
         if: github.event_name != 'pull_request'
@@ -107,9 +99,7 @@ jobs:
         with:
           context: .
           file: Dockerfile
-          # The static musl binary is built inside the image; arm64 would need cross-compilation
-          # or a very slow QEMU build, so only amd64 is published.
-          platforms: linux/amd64
+          platforms: linux/amd64,linux/arm64
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
