@@ -7,13 +7,13 @@ ARG APP_NAME=brave-rotator
 # static binary. If you have no access to Docker Hardened Images use instead:
 #   FROM rust:${RUST_VERSION}-alpine AS build
 #   RUN apk add --no-cache musl-dev
-FROM dhi.io/rust:${RUST_VERSION}-alpine3.22-dev AS build
+FROM rust:${RUST_VERSION}-alpine3.22 AS build
 ARG APP_NAME
 WORKDIR /app
+RUN apk add --no-cache musl-dev
 
 # 1) Compile dependencies against a stub so this layer is cached until Cargo.toml/Cargo.lock change.
 COPY Cargo.toml Cargo.lock ./
-COPY .cargo ./.cargo
 RUN mkdir -p src && echo 'fn main() {}' > src/main.rs \
  && cargo build --release --locked \
  && rm -rf src
