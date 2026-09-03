@@ -1,0 +1,140 @@
+name: Docker Build & Release
+
+on:
+  schedule:
+    - cron: '0 9 * * *'
+  push:
+    branches:
+      - main
+    tags:
+      - 'v*'
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  REGISTRY: ghcr.io
+  # Must match the image referenced in compose.yml.
+  IMAGE_NAME: ${{ github.repository_owner }}/brave-search-api-rotator
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    name: Test (cargo fmt, clippy, test)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache cargo registry and build
+        uses: Swatinem/rust-cache@v2
+
+      - name: Check formatting
+        run: cargo fmt --all --check
+
+      - name: Clippy
+        run: cargo clippy --all-targets --locked -- -D warnings
+
+      - name: Unit tests
+        run: cargo test --locked
+
+      - name: End-to-end test against the mock Brave API
+        run: |
+          cargo build --release --locked
+          BIN=target/release/brave-rotator ./scripts/e2e.sh
+
+  build-and-push:
+    name: Build & push Docker image
+    needs: test
+    runs-on: ubuntu-latest
+    env:
+      # Docker Hardened Images (dhi.io, the build stage's base) require a Docker Hub login.
+      # Add DOCKERHUB_USERNAME / DOCKERHUB_TOKEN as repository secrets; the login step is
+      # skipped when they are absent, in which case the pull of dhi.io/rust will fail.
+      DHI_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3.11.1
+
+      - name: Log in to Docker Hardened Images registry
+        if: env.DHI_USERNAME != ''
+        uses: docker/login-action@v3.5.0
+        with:
+          registry: dhi.io
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Log in to GitHub Container Registry
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3.5.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5.9.0
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Build and push image
+        uses: docker/build-push-action@v6.18.0
+        with:
+          context: .
+          file: Dockerfile
+          # The static musl binary is built inside the image; arm64 would need cross-compilation
+          # or a very slow QEMU build, so only amd64 is published.
+          platforms: linux/amd64
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  release:
+    name: Create GitHub release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${{ github.ref_name }}" \
+            --repo "${{ github.repository }}" \
+            --title "${{ github.ref_name }}" \
+            --notes "Image: \`${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${GITHUB_REF_NAME#v}\`" \
+            --generate-notes

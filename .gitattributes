@@ -1,0 +1,7 @@
+# Keep LF endings for files that are executed inside Linux (WSL / containers).
+* text=auto
+*.sh text eol=lf
+*.py text eol=lf
+*.rs text eol=lf
+*.toml text eol=lf
+Dockerfile text eol=lf

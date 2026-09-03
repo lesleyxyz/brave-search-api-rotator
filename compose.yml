@@ -1,0 +1,18 @@
+services:
+  brave-rotator:
+    image: ghcr.io/lesleyxyz/brave-search-api-rotator:latest
+    build: .
+    ports:
+      - 8080:8080
+    environment:
+      # Comma-separated Brave Search API keys (put them in .env, never in git).
+      BRAVE_API_KEYS: ${BRAVE_API_KEYS}
+      # Optional shared secret clients must send as X-Proxy-Token (or X-Subscription-Token).
+      PROXY_TOKEN: ${PROXY_TOKEN:-}
+      RUST_LOG: ${RUST_LOG:-info}
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "/brave-rotator", "healthcheck"]
+      interval: 30s
+      timeout: 3s
+      start_period: 5s
